@@ -27,7 +27,11 @@ using System.Net;
 using System.Text;
 using System.Threading;
 using System.Windows.Forms;
+using System.ComponentModel;
+using System.Collections;
+using System.Runtime.InteropServices;
 using System.Xml;
+using System.Diagnostics;
 using IrssComms;
 using IrssUtils;
 using IrssUtils.Forms;
@@ -46,6 +50,7 @@ namespace MediaPortal.Plugins
   /// <summary>
     /// MediaPortal Control Plugin for IR Server.
     /// </summary>
+  [CLSCompliant(false)]
   public class MPControlPlugin : IPlugin, ISetupForm
   {
     #region Constants
@@ -88,9 +93,9 @@ namespace MediaPortal.Plugins
     private static bool _mouseModeAcceleration;
 
     private static bool _mouseModeActive;
-    private static RemoteButton _mouseModeButton = RemoteButton.None;
+    private static RemoteButton_my _mouseModeButton = RemoteButton_my.None;
     private static bool _mouseModeEnabled;
-    private static RemoteButton _mouseModeLastButton = RemoteButton.None;
+    private static RemoteButton_my _mouseModeLastButton = RemoteButton_my.None;
     private static long _mouseModeLastButtonTicks;
     private static bool _mouseModeLeftHeld;
     private static bool _mouseModeMiddleHeld;
@@ -100,7 +105,7 @@ namespace MediaPortal.Plugins
     private static bool _mpBasicHome;
     private static List<InputHandler> _multiInputHandlers;
 
-    private static RemoteButton _multiMappingButton;
+    private static RemoteButton_my _multiMappingButton;
     private static bool _multiMappingEnabled;
     private static int _multiMappingSet;
     private static string[] _multiMaps;
@@ -110,7 +115,83 @@ namespace MediaPortal.Plugins
     private static bool _requireFocus;
     private static string _serverHost;
 
+    private ReceiverWindow _receiverWindowHID;
+    private RawInput.RAWINPUTDEVICE[] _deviceTree;
+    private int KeyboardDevice = -1;
+    private string KeyboardDeviceName = string.Empty;
+    private static readonly string[] SupportedDevices_HID = new string[]
+        {
+            "Vid_15c2&Pid_003c",
+            "Vid_15c2&Pid_0038",
+            "Vid_15c2&Pid_0036"
+        };
+    private const string HIDKeyboardSuffix = "MI_00&Col02#";
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_SYSKEYDOWN = 0x0104;
+    private const int WM_KEYUP = 0x0101;
+    private const int WM_SYSKEYUP = 0x0105;
+    [DllImport("user32.dll")]
+    private static extern bool GetKeyboardState(byte[] keyState);
+    [DllImport("user32.dll", CharSet = CharSet.Auto)]
+    internal static extern int MapVirtualKey(int uCode, int nMapType);
+    [DllImport("user32.dll")]
+    public static extern bool PostMessage(IntPtr hwnd, uint wMsg, uint wParam, uint lParam);
+    [DllImport("user32.dll")]
+    static extern bool SetKeyboardState(byte[] lpKeyState);
+    // Define all possible Ctrl-keys
+    private static Hashtable controlKeys = getAsHashtable(new Keys[] { Keys.ControlKey, Keys.LControlKey, Keys.RControlKey });
+    // Define all possible Alt-keys
+    private static Hashtable menuKeys = getAsHashtable(new Keys[] { Keys.Menu, Keys.LMenu, Keys.RMenu });
+    // Define all possible Shift-keys
+    private static Hashtable shiftKeys = getAsHashtable(new Keys[] { Keys.ShiftKey, Keys.LShiftKey, Keys.RShiftKey });
+    // Define all possible Win-keys
+    //private static Hashtable winKeys = getAsHashtable(new Keys[] { Keys.LWin, Keys.RWin });
+    // Define all 'special' modifier keys; modifier keys that are not defined via Control.ModifierKeys
+    // Currently these are only the Win-keys
+    //private static Hashtable specialModifierKeys = combineTables(new Hashtable[] { winKeys });
+    // Define all possible modifier keys, being all Ctrl, Alt, Shift and Win-keys
+    //private static Hashtable modifierKeys = combineTables(new Hashtable[] { controlKeys, menuKeys, shiftKeys, winKeys });
+    private static Hashtable modifierKeys = combineTables(new Hashtable[] { controlKeys, menuKeys, shiftKeys });
+    // The currently pressed modifier keys
+    private static Hashtable currentModifierKeys = new Hashtable();
+
     #endregion Variables
+     
+    #region Hashtable / Set utility methods.
+
+    private static Hashtable getAsHashtable(Keys[] keys)
+    {
+        Hashtable result = new Hashtable();
+        foreach (object key in keys)
+        {
+            result.Add(key, null);
+        }
+        return result;
+    }
+
+    private static Hashtable combineTables(Hashtable[] hashtables)
+    {
+        Hashtable result = new Hashtable();
+        foreach (Hashtable hashtable in hashtables)
+        {
+            foreach (object key in hashtable.Keys)
+            {
+                result.Add(key, hashtable[key]);
+            }
+        }
+        return result;
+    }
+
+    protected bool Overlaps(Hashtable table1, Hashtable table2)
+    {
+        foreach (object key in table1.Keys)
+        {
+            if (table2.ContainsKey(key)) return true;
+        }
+        return false;
+    }
+
+    #endregion
 
     #region Properties
 
@@ -154,7 +235,7 @@ namespace MediaPortal.Plugins
     /// Gets or sets the mouse mode button.
     /// </summary>
     /// <value>The mouse mode button.</value>
-    internal static RemoteButton MouseModeButton
+    internal static RemoteButton_my MouseModeButton
     {
       get { return _mouseModeButton; }
       set { _mouseModeButton = value; }
@@ -215,7 +296,7 @@ namespace MediaPortal.Plugins
     /// Gets or sets the multi mapping button.
     /// </summary>
     /// <value>The multi mapping button.</value>
-    internal static RemoteButton MultiMappingButton
+    internal static RemoteButton_my MultiMappingButton
     {
       get { return _multiMappingButton; }
       set { _multiMappingButton = value; }
@@ -261,6 +342,219 @@ namespace MediaPortal.Plugins
     }
 
     #endregion Properties
+      
+    #region Procmessages
+       private void ProcMessage(ref Message m)
+        {
+            switch (m.Msg)
+            {
+                case RawInput.WM_INPUT:
+                    m.Result = (IntPtr)1;
+                    ProcessInputCommand(ref m);
+                    break;
+            }
+        }
+       private void ProcessInputCommand(ref Message message)
+       {
+           uint dwSize = 0;
+
+           // if no imon HID Keyboard was not we do not have to do anything
+           if (KeyboardDevice < 0) return;
+
+           RawInput.GetRawInputData(message.LParam, RawInput.RawInputCommand.Input, IntPtr.Zero, ref dwSize,
+                                    (uint)Marshal.SizeOf(typeof(RawInput.RAWINPUTHEADER)));
+
+           IntPtr buffer = Marshal.AllocHGlobal((int)dwSize);
+           try
+           {
+               if (buffer == IntPtr.Zero)
+                   return;
+
+               if (RawInput.GetRawInputData(message.LParam, RawInput.RawInputCommand.Input, buffer, ref dwSize,
+                                          (uint)Marshal.SizeOf(typeof(RawInput.RAWINPUTHEADER))) != dwSize)
+                   return;
+
+               RawInput.RAWINPUT raw = (RawInput.RAWINPUT)Marshal.PtrToStructure(buffer, typeof(RawInput.RAWINPUT));
+
+               #region device filtering
+               // get the name of the device that generated the input message
+               string deviceName = string.Empty;
+               uint pcbSize = 0;
+               RawInput.GetRawInputDeviceInfo(raw.header.hDevice, RawInput.RIDI_DEVICENAME, IntPtr.Zero, ref pcbSize);
+               if (pcbSize > 0)
+               {
+                   IntPtr pData = Marshal.AllocHGlobal((int)pcbSize);
+                   RawInput.GetRawInputDeviceInfo(raw.header.hDevice, RawInput.RIDI_DEVICENAME, pData, ref pcbSize);
+                   deviceName = Marshal.PtrToStringAnsi(pData);
+                   Marshal.FreeHGlobal(pData);
+               }
+
+               // OK here we have to process all other WM_INPUT Keyboard Msgs and ONLY Keyboard Messages cause we only register for Keyboards
+               if (raw.header.dwType == RawInput.RawInputType.Keyboard)
+               {
+                   // stop processing if the device that generated the event IS iMon Keyboard device
+                   if (deviceName.Equals(KeyboardDeviceName)) return;
+                   Log.Debug("MPControlPlugin: Received WM_INPUT Keyboard Message from: {0} Msg: {1} Make: {2} Reserved: {3} Flags: {4}, Extra: {5}, VKey: {6}",
+                              deviceName, raw.keyboard.Message.ToString(), raw.keyboard.MakeCode.ToString(), raw.keyboard.Reserved.ToString(),
+                              raw.keyboard.Flags.ToString(), raw.keyboard.ExtraInformation.ToString(),
+                              raw.keyboard.VKey.ToString());
+
+                   Keys key = (Keys)raw.keyboard.VKey;
+                   if (raw.keyboard.Message == WM_SYSKEYDOWN || raw.keyboard.Message == WM_KEYDOWN)
+                   {
+                       if (modifierKeys.ContainsKey(key))
+                       {
+                           // Handle modifier keys; add these keys to the currentModifierKeys set.
+                           if (!currentModifierKeys.ContainsKey(key))
+                           {
+                               currentModifierKeys.Add(key, null);
+                           }
+                       }
+                       else
+                       {
+                           // real Key Press - so send it to the window
+                           PostKeyExHWND(GUIGraphicsContext.form.Handle, key, ref currentModifierKeys);
+                       }
+                   }
+                   else
+                   {
+                       // must be a key up Message
+                       if (modifierKeys.ContainsKey(key) && currentModifierKeys.ContainsKey(key))
+                       {
+                           currentModifierKeys.Remove(key);
+                       }
+                   }
+               }
+
+               #endregion
+           }
+           finally
+           {
+               Marshal.FreeHGlobal(buffer);
+           }
+       }
+       public int MAKELONG(ushort lowPart, ushort highPart)
+       {
+           return (int)(((ushort)lowPart) | (uint)(highPart << 16));
+       }
+
+        public void PostKeyExHWND(IntPtr hWindow, Keys key, ref Hashtable currentModifierKeys) {
+            byte[] kbState = new byte[255];
+            int lParam = MAKELONG(0, (ushort)MapVirtualKey((int)key, 0));
+            GetKeyboardState(kbState);
+            byte[] kbStateMOD = kbState;
+
+            if (Overlaps(currentModifierKeys, shiftKeys)) { 
+                kbStateMOD[(int)Keys.ShiftKey] = 0x80;
+            }
+            if (Overlaps(currentModifierKeys, menuKeys)) {
+                kbStateMOD[(int)Keys.Menu] = 0x80;
+                lParam = lParam | 0x20000000;
+            }
+            if (Overlaps(currentModifierKeys, controlKeys)) {
+                kbStateMOD[(int)Keys.ControlKey] = 0x80;
+            }
+
+            SetKeyboardState(kbStateMOD);
+            if (Overlaps(currentModifierKeys, menuKeys)) {
+                Log.Debug("MPControlPlugin: send SYSKEY: key {0} lparam: {1}", key.ToString(), lParam.ToString());
+                PostMessage(hWindow, WM_SYSKEYDOWN, (uint)key, (uint)lParam);
+                PostMessage(hWindow, WM_SYSKEYUP, (uint)key, ((uint)lParam | 0xC0000000));
+            }
+            else
+            {
+                Log.Debug("MPControlPlugin: send KEY: key {0} lparam: {1}", key.ToString(), lParam.ToString());
+                PostMessage(hWindow, WM_KEYDOWN, (uint)key, (uint)lParam);
+                PostMessage(hWindow, WM_KEYUP, (uint)key, ((uint)lParam | 0xC0000000));
+            }
+            Application.DoEvents();
+
+            SetKeyboardState(kbState);
+        }
+
+      #region RawInputfunctions
+      private void FindDevices_HID()
+        {
+            if (_deviceTree != null) return;
+            // configure the device tree
+            int numDevices = 1;
+            Log.Debug("MPControlPlugin: FindDevices_HID(): searching for {0} devices", numDevices);
+            if (numDevices == 0) return;
+            RawInput.RAWINPUTDEVICE kDevice = new RawInput.RAWINPUTDEVICE();
+            // get the complete list of raw input devices and parse it for supported devices
+            List<DeviceDetails> _devices = new List<DeviceDetails>();
+
+            try
+            {
+                _devices = RawInput.EnumerateDevices();
+            }
+            catch
+            {
+                return;
+            }
+
+            if (_devices.Count > 0)
+            {
+                foreach (DeviceDetails details in _devices)
+                {
+                    Log.Debug("MPControlPlugin: FindDevices_HID(): checking device \"{0}\"", details.ID);
+                    // check the details against the supported device list
+                    foreach (string sDevice in SupportedDevices_HID)
+                    {
+                            // check for keyboard device - MI_00&Col02#
+                            if (details.ID.Contains(HIDKeyboardSuffix))
+                            {
+                                Log.Debug("MPControlPlugin: FindDevices_HID(): Found iMon Keyboard device\n");
+                                // found the keyboard device
+                                kDevice = new RawInput.RAWINPUTDEVICE();
+                                kDevice.usUsage = details.Usage;
+                                kDevice.usUsagePage = details.UsagePage;
+                                KeyboardDeviceName = details.ID;
+                            }
+                        }
+                    }
+                }
+                numDevices = ((kDevice.usUsage > 0) ? 2 : 0);
+                int DevIndex = 0;
+                Log.Debug("MPControlPlugin: FindDevices_HID(): Found {0} Devices", numDevices);
+                _deviceTree = new RawInput.RAWINPUTDEVICE[numDevices];
+
+                if (kDevice.usUsage > 0)
+                {
+                    KeyboardDevice = DevIndex;
+                    DevIndex++;
+                    _deviceTree[KeyboardDevice].usUsage = kDevice.usUsage;
+                    _deviceTree[KeyboardDevice].usUsagePage = kDevice.usUsagePage;
+
+                    _deviceTree[DevIndex].usUsage = kDevice.usUsage;
+                    _deviceTree[DevIndex].usUsagePage = kDevice.usUsagePage;
+                    DevIndex++;
+                    Log.Debug("MPControlPlugin: FindDevices_HID(): Added iMon Keyboard device as deviceTree[{0}]", KeyboardDevice);
+                }
+
+            }
+              private bool RegisterForRawInput(RawInput.RAWINPUTDEVICE device)
+              {
+                  RawInput.RAWINPUTDEVICE[] devices = new RawInput.RAWINPUTDEVICE[1];
+                  devices[0] = device;
+
+                  return RegisterForRawInput(devices);
+              }
+              private bool RegisterForRawInput(RawInput.RAWINPUTDEVICE[] devices)
+              {
+                  Log.Debug("MPControlPlugin: RegisterForRawInput(): Registering {0} device(s).", devices.Length);
+                  if (
+                    !RawInput.RegisterRawInputDevices(devices, (uint)devices.Length,
+                                                      (uint)Marshal.SizeOf(typeof(RawInput.RAWINPUTDEVICE))))
+                  {
+                      int dwError = Marshal.GetLastWin32Error();
+                      Log.Debug("MPControlPlugin: RegisterForRawInput(): error={0}", dwError);
+                      throw new Win32Exception(dwError, "Imon:RegisterForRawInput()");
+                  }
+                  Log.Debug("MPControlPlugin: RegisterForRawInput(): Done.");
+                  return true;
+              }
+    #endregion
 
     #region IPlugin methods
 
@@ -279,6 +573,32 @@ namespace MediaPortal.Plugins
       // Load the remote button mappings
       _remoteMap = LoadRemoteMap(RemotesFile);
 
+      // Find Imon HID Device if we have one
+      FindDevices_HID();
+      if (KeyboardDevice > -1)
+      {
+          Log.Debug("MPControlPlugin: Keyboard Usage: {0}", _deviceTree[KeyboardDevice].usUsage);
+          Log.Debug("MPControlPlugin: Keyboard UsagePage: {0}", _deviceTree[KeyboardDevice].usUsagePage);
+
+          _receiverWindowHID = new ReceiverWindow("WM_INPUT receiver");
+          _receiverWindowHID.ProcMsg += ProcMessage;
+
+          _deviceTree[KeyboardDevice].dwFlags = RawInput.RawInputDeviceFlags.NoLegacy |
+                                        RawInput.RawInputDeviceFlags.InputSink;
+
+          _deviceTree[KeyboardDevice].hwndTarget = GUIGraphicsContext.form.Handle;
+
+          _deviceTree[KeyboardDevice + 1].dwFlags = RawInput.RawInputDeviceFlags.NoLegacy |
+                                        RawInput.RawInputDeviceFlags.InputSink;
+
+          _deviceTree[KeyboardDevice + 1].hwndTarget = _receiverWindowHID.Handle;
+
+          if (!RegisterForRawInput(_deviceTree))
+          {
+              Log.Debug("MPControlPlugin: ERROR: Failed to register for HID Raw input");
+              throw new InvalidOperationException("Failed to register for HID Raw input");
+          }
+      }
       // Load input handler
       LoadDefaultMapping();
 
@@ -316,6 +636,21 @@ namespace MediaPortal.Plugins
     public void Stop()
     {
       SystemEvents.PowerModeChanged -= SystemEvents_PowerModeChanged;
+
+      if (_deviceTree != null && _deviceTree.Length == 2)
+      {
+          Log.Debug("MPControlPlugin: Stop Imon Keybord HID");
+          _deviceTree[0].dwFlags |= RawInput.RawInputDeviceFlags.Remove;
+          _deviceTree[1].dwFlags |= RawInput.RawInputDeviceFlags.Remove;
+          // this should work but it does not - so perhaps somebody can fix it
+          // but it is not really needed - cause when the windows are closed - the RawInputdevices
+          // are removed by windows automatically
+          // RegisterForRawInput(_deviceTree);
+
+          _receiverWindowHID.ProcMsg -= ProcMessage;
+          _receiverWindowHID.DestroyHandle();
+          _receiverWindowHID = null;
+      }
 
       if (EventMapperEnabled)
       {
@@ -459,7 +794,7 @@ namespace MediaPortal.Plugins
     /// </summary>
     /// <param name="button">The button pressed.</param>
     /// <returns>true if handled successfully, otherwise false.</returns>
-    private static bool HandleMouseMode(RemoteButton button)
+    private static bool HandleMouseMode(RemoteButton_my button)
     {
       if (button == MouseModeButton)
       {
@@ -515,23 +850,23 @@ namespace MediaPortal.Plugins
 
         switch (button)
         {
-          case RemoteButton.Up:
+          case RemoteButton_my.Up:
             Mouse.Move(0, -distance, false);
             return true;
 
-          case RemoteButton.Down:
+          case RemoteButton_my.Down:
             Mouse.Move(0, distance, false);
             return true;
 
-          case RemoteButton.Left:
+          case RemoteButton_my.Left:
             Mouse.Move(-distance, 0, false);
             return true;
 
-          case RemoteButton.Right:
+          case RemoteButton_my.Right:
             Mouse.Move(distance, 0, false);
             return true;
 
-          case RemoteButton.Replay: // Left Single-Click
+          case RemoteButton_my.Replay: // Left Single-Click
             if (_mouseModeLeftHeld)
               Mouse.Button(Mouse.MouseEvents.LeftUp);
 
@@ -549,7 +884,7 @@ namespace MediaPortal.Plugins
             Mouse.Button(Mouse.MouseEvents.LeftUp);
             return true;
 
-          case RemoteButton.Skip: // Right Single-Click
+          case RemoteButton_my.Skip: // Right Single-Click
             if (_mouseModeLeftHeld)
               Mouse.Button(Mouse.MouseEvents.LeftUp);
 
@@ -567,7 +902,7 @@ namespace MediaPortal.Plugins
             Mouse.Button(Mouse.MouseEvents.RightUp);
             return true;
 
-          case RemoteButton.Play: // Middle Single-Click
+          case RemoteButton_my.Play: // Middle Single-Click
             if (_mouseModeLeftHeld)
               Mouse.Button(Mouse.MouseEvents.LeftUp);
 
@@ -585,7 +920,7 @@ namespace MediaPortal.Plugins
             Mouse.Button(Mouse.MouseEvents.MiddleUp);
             return true;
 
-          case RemoteButton.Ok: // Double-Click (Left)
+          case RemoteButton_my.Ok: // Double-Click (Left)
             if (_mouseModeLeftHeld)
               Mouse.Button(Mouse.MouseEvents.LeftUp);
 
@@ -606,7 +941,7 @@ namespace MediaPortal.Plugins
             Mouse.Button(Mouse.MouseEvents.LeftUp);
             return true;
 
-          case RemoteButton.Back: // Left Click & Hold
+          case RemoteButton_my.Back: // Left Click & Hold
             if (_mouseModeRightHeld)
               Mouse.Button(Mouse.MouseEvents.RightUp);
 
@@ -623,7 +958,7 @@ namespace MediaPortal.Plugins
             _mouseModeMiddleHeld = false;
             return true;
 
-          case RemoteButton.Info: // Right Click & Hold
+          case RemoteButton_my.Info: // Right Click & Hold
             if (_mouseModeLeftHeld)
               Mouse.Button(Mouse.MouseEvents.LeftUp);
 
@@ -640,7 +975,7 @@ namespace MediaPortal.Plugins
             _mouseModeMiddleHeld = false;
             return true;
 
-          case RemoteButton.Stop: // Middle Click & Hold
+          case RemoteButton_my.Stop: // Middle Click & Hold
             if (_mouseModeLeftHeld)
               Mouse.Button(Mouse.MouseEvents.LeftUp);
 
@@ -657,11 +992,11 @@ namespace MediaPortal.Plugins
             _mouseModeRightHeld = false;
             return true;
 
-          case RemoteButton.ChannelUp: // Scroll Up
+          case RemoteButton_my.ChannelUp: // Scroll Up
             Mouse.Scroll(Mouse.ScrollDir.Up);
             return true;
 
-          case RemoteButton.ChannelDown: // Scroll Down
+          case RemoteButton_my.ChannelDown: // Scroll Down
             Mouse.Scroll(Mouse.ScrollDir.Down);
             return true;
         }
@@ -706,11 +1041,11 @@ namespace MediaPortal.Plugins
         if (gotMapped)
           Log.Debug("MPControlPlugin: Command \"{0}\" mapped to remote", mapping.Button);
         else
-          Log.Debug("MPControlPlugin: Command \"{0}\" not mapped to remote", mapping.Button);
+            Log.Debug("MPControlPlugin: Command \"{0}\" not mapped to remote", mapping.Button);
 
         return;
       }
-      
+
       Log.Debug("MPControlPlugin: keyCode \"{0}\" was not handled", keyCode);
 
       return;
@@ -934,6 +1269,8 @@ namespace MediaPortal.Plugins
     {
       List<MappedKeyCode> remoteMap = new List<MappedKeyCode>();
 
+      Log.Error("MPControlPlugin: Try loading remotemap \"{0}\"", remoteFile);
+
       try
       {
         XmlDocument doc = new XmlDocument();
@@ -942,7 +1279,7 @@ namespace MediaPortal.Plugins
         XmlNodeList listRemotes = doc.DocumentElement.SelectNodes("remote");
         foreach (XmlNode nodeRemote in listRemotes)
         {
-          //string remoteName = nodeRemote.Attributes["name"].Value;
+          string remoteName = nodeRemote.Attributes["name"].Value;
 
           XmlNodeList listButtons = nodeRemote.SelectNodes("button");
           foreach (XmlNode nodeButton in listButtons)
@@ -953,7 +1290,15 @@ namespace MediaPortal.Plugins
             foreach (XmlNode nodeCode in listIRCodes)
             {
               string remoteCode = nodeCode.Attributes["value"].Value;
-              remoteMap.Add(new MappedKeyCode(remoteButton, remoteCode));
+                try
+                {
+                    MappedKeyCode keycode = new MappedKeyCode(remoteButton, remoteCode);
+                    remoteMap.Add(keycode);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error("MPControlPlugin - MappedKeyCode(): {0}", ex.ToString());
+                }
             }
           }
         }
@@ -1227,7 +1572,7 @@ namespace MediaPortal.Plugins
     /// <param name="port">Port to blast to.</param>
     internal static void BlastIR(string fileName, string port)
     {
-      Log.Debug("MPControlPlugin - BlastIR(): {0}, {1}", fileName, port);
+      Log.Debug("MPControlPlugin: MPControlPlugin - BlastIR(): {0}, {1}", fileName, port);
 
       if (!_registered)
         throw new InvalidOperationException("Cannot Blast, not registered to an active IR Server");
@@ -1583,10 +1928,10 @@ namespace MediaPortal.Plugins
           RequireFocus = xmlreader.GetValueAsBool("MPControlPlugin", "RequireFocus", true);
           MultiMappingEnabled = xmlreader.GetValueAsBool("MPControlPlugin", "MultiMappingEnabled", false);
           MultiMappingButton =
-            (RemoteButton) xmlreader.GetValueAsInt("MPControlPlugin", "MultiMappingButton", (int) RemoteButton.Start);
+            (RemoteButton_my) xmlreader.GetValueAsInt("MPControlPlugin", "MultiMappingButton", (int) RemoteButton_my.Start);
           EventMapperEnabled = xmlreader.GetValueAsBool("MPControlPlugin", "EventMapperEnabled", false);
           MouseModeButton =
-            (RemoteButton) xmlreader.GetValueAsInt("MPControlPlugin", "MouseModeButton", (int) RemoteButton.Teletext);
+            (RemoteButton_my) xmlreader.GetValueAsInt("MPControlPlugin", "MouseModeButton", (int) RemoteButton_my.Teletext);
           MouseModeEnabled = xmlreader.GetValueAsBool("MPControlPlugin", "MouseModeEnabled", false);
           MouseModeStep = xmlreader.GetValueAsInt("MPControlPlugin", "MouseModeStep", 10);
           MouseModeAcceleration = xmlreader.GetValueAsBool("MPControlPlugin", "MouseModeAcceleration", true);
@@ -1630,4 +1975,628 @@ namespace MediaPortal.Plugins
 
     #endregion Implementation
   }
+
+  #region receiverwindow
+
+  #region Delegates
+
+  /// <summary>
+  /// Windows message processing delegate.
+  /// </summary>
+  /// <param name="m">Windows message.</param>
+  internal delegate void ProcessMessage(ref Message m);
+
+  #endregion Delegates
+
+  /// <summary>
+  /// Use this class to receive windows messages.
+  /// </summary>
+  internal class ReceiverWindow : NativeWindow
+  {
+      #region Variables
+
+      private ProcessMessage _processMessage;
+
+      #endregion Variables
+
+      #region Properties
+
+      /// <summary>
+      /// Gets or Sets the Windows Message processing delegate.
+      /// </summary>
+      public ProcessMessage ProcMsg
+      {
+          get { return _processMessage; }
+          set { _processMessage = value; }
+      }
+
+      #endregion Properties
+
+      #region Constructor/Destructor
+
+      /// <summary>
+      /// Create a Windows Message receiving window object.
+      /// </summary>
+      /// <param name="windowTitle">Window title for receiver object.</param>
+      public ReceiverWindow(string windowTitle)
+      {
+          CreateParams createParams = new CreateParams();
+          createParams.Caption = windowTitle;
+          createParams.ExStyle = 0x80;
+          createParams.Style = unchecked((int)0x80000000);
+
+          CreateHandle(createParams);
+      }
+
+      ~ReceiverWindow()
+      {
+          if (Handle != IntPtr.Zero)
+              DestroyHandle();
+      }
+
+      #endregion Constructor/Destructor
+
+      #region Implementation
+
+      protected override void WndProc(ref Message m)
+      {
+          if (_processMessage != null)
+              _processMessage(ref m);
+
+          if (m.Result == (IntPtr)0)
+              base.WndProc(ref m);
+      }
+
+      #endregion Implementation
+  }
+  #endregion
+
+  internal class DeviceDetails
+  {
+      private string _id;
+      private string _name;
+      private ushort _usage;
+      private ushort _usagePage;
+
+      /// <summary>
+      /// Gets or sets the name.
+      /// </summary>
+      /// <value>The name.</value>
+      public string Name
+      {
+          get { return _name; }
+          set { _name = value; }
+      }
+
+      /// <summary>
+      /// Gets or sets the ID.
+      /// </summary>
+      /// <value>The ID.</value>
+      public string ID
+      {
+          get { return _id; }
+          set { _id = value; }
+      }
+
+      /// <summary>
+      /// Gets or sets the usage page.
+      /// </summary>
+      /// <value>The usage page.</value>
+      public ushort UsagePage
+      {
+          get { return _usagePage; }
+          set { _usagePage = value; }
+      }
+
+      /// <summary>
+      /// Gets or sets the usage.
+      /// </summary>
+      /// <value>The usage.</value>
+      public ushort Usage
+      {
+          get { return _usage; }
+          set { _usage = value; }
+      }
+  }
+
+  internal static class RawInput
+  {
+      #region Interop
+
+      [DllImport("User32.dll")]
+      internal static extern uint GetRawInputData(
+        IntPtr hRawInput,
+        RawInputCommand uiCommand,
+        IntPtr pData,
+        ref uint pcbSize,
+        uint cbSizeHeader);
+
+      [DllImport("User32.dll")]
+      internal static extern bool RegisterRawInputDevices(
+        RAWINPUTDEVICE[] pRawInputDevice,
+        uint uiNumDevices,
+        uint cbSize);
+
+      [DllImport("User32.dll")]
+      internal static extern uint GetRawInputDeviceList(
+        IntPtr pRawInputDeviceList,
+        ref uint uiNumDevices,
+        uint cbSize);
+
+      [DllImport("User32.dll")]
+      internal static extern uint GetRawInputDeviceInfo(
+        IntPtr hDevice,
+        uint uiCommand,
+        IntPtr pData,
+        ref uint pcbSize);
+
+      [DllImport("User32.dll")]
+      internal static extern uint GetRawInputDeviceInfo(
+        IntPtr deviceHandle,
+        uint uiCommand,
+        ref DeviceInfo data,
+        ref uint dataSize);
+
+      #endregion Interop
+
+      #region Constants
+
+      public const int KEYBOARD_OVERRUN_MAKE_CODE = 0x00FF;
+      public const int RIDI_DEVICEINFO = 0x2000000B;
+      public const int RIDI_DEVICENAME = 0x20000007;
+      public const int RIDI_PREPARSEDDATA = 0x20000005;
+      public const int WM_APPCOMMAND = 0x0319;
+      public const int WM_INPUT = 0x00FF;
+
+      #endregion Constants
+
+      #region Enumerations
+
+      #region RawInputCommand enum
+
+      public enum RawInputCommand
+      {
+          Input = 0x10000003,
+          Header = 0x10000005,
+      }
+
+      #endregion
+
+      #region RawInputDeviceFlags enum
+
+      [Flags]
+      public enum RawInputDeviceFlags
+      {
+          /// <summary>No flags.</summary>
+          None = 0,
+          /// <summary>If set, this removes the top level collection from the inclusion list. This tells the operating system to stop reading from a device which matches the top level collection.</summary>
+          Remove = 0x00000001,
+          /// <summary>If set, this specifies the top level collections to exclude when reading a complete usage page. This flag only affects a TLC whose usage page is already specified with PageOnly.</summary>
+          Exclude = 0x00000010,
+          /// <summary>If set, this specifies all devices whose top level collection is from the specified usUsagePage. Note that Usage must be zero. To exclude a particular top level collection, use Exclude.</summary>
+          PageOnly = 0x00000020,
+          /// <summary>If set, this prevents any devices specified by UsagePage or Usage from generating legacy messages. This is only for the mouse and keyboard.</summary>
+          NoLegacy = 0x00000030,
+          /// <summary>If set, this enables the caller to receive the input even when the caller is not in the foreground. Note that WindowHandle must be specified.</summary>
+          InputSink = 0x00000100,
+          /// <summary>If set, the mouse button click does not activate the other window.</summary>
+          CaptureMouse = 0x00000200,
+          /// <summary>If set, the application-defined keyboard device hotkeys are not handled. However, the system hotkeys; for example, ALT+TAB and CTRL+ALT+DEL, are still handled. By default, all keyboard hotkeys are handled. NoHotKeys can be specified even if NoLegacy is not specified and WindowHandle is NULL.</summary>
+          NoHotKeys = 0x00000200,
+          /// <summary>If set, application keys are handled.  NoLegacy must be specified.  Keyboard only.</summary>
+          AppKeys = 0x00000400
+      }
+
+      #endregion
+
+      #region RawInputType enum
+
+      public enum RawInputType
+      {
+          Mouse = 0,
+          Keyboard = 1,
+          HID = 2
+      }
+
+      #endregion
+
+      #region RawKeyboardFlags enum
+
+      [Flags]
+      public enum RawKeyboardFlags : ushort
+      {
+          KeyMake = 0x00,
+          KeyBreak = 0x01,
+          KeyE0 = 0x02,
+          KeyE1 = 0x04,
+          TerminalServerSetLED = 0x08,
+          TerminalServerShadow = 0x10
+      }
+
+      #endregion
+
+      #region RawMouseButtons enum
+
+      [Flags]
+      public enum RawMouseButtons : ushort
+      {
+          None = 0,
+          LeftDown = 0x0001,
+          LeftUp = 0x0002,
+          RightDown = 0x0004,
+          RightUp = 0x0008,
+          MiddleDown = 0x0010,
+          MiddleUp = 0x0020,
+          Button4Down = 0x0040,
+          Button4Up = 0x0080,
+          Button5Down = 0x0100,
+          Button5Up = 0x0200,
+          MouseWheel = 0x0400
+      }
+
+      #endregion
+
+      #region RawMouseFlags enum
+
+      [Flags]
+      public enum RawMouseFlags : ushort
+      {
+          MoveRelative = 0,
+          MoveAbsolute = 1,
+          VirtualDesktop = 2,
+          AttributesChanged = 4
+      }
+
+      #endregion
+
+      #endregion Enumerations
+
+      #region Structures
+
+      #region Nested type: BUTTONSSTR
+
+      [StructLayout(LayoutKind.Sequential)]
+      public struct BUTTONSSTR
+      {
+          [MarshalAs(UnmanagedType.U2)]
+          public ushort usButtonFlags;
+          [MarshalAs(UnmanagedType.U2)]
+          public ushort usButtonData;
+      }
+
+      #endregion
+
+      #region Nested type: DeviceInfo
+
+      [StructLayout(LayoutKind.Explicit)]
+      public struct DeviceInfo
+      {
+          [FieldOffset(0)]
+          public int Size;
+          [FieldOffset(4)]
+          public RawInputType Type;
+
+          [FieldOffset(8)]
+          public DeviceInfoMouse MouseInfo;
+          [FieldOffset(8)]
+          public DeviceInfoKeyboard KeyboardInfo;
+          [FieldOffset(8)]
+          public DeviceInfoHID HIDInfo;
+      }
+
+      #endregion
+
+      #region Nested type: DeviceInfoHID
+
+      public struct DeviceInfoHID
+      {
+          public uint VendorID;
+          public uint ProductID;
+          public uint Revision;
+          public ushort UsagePage;
+          public ushort Usage;
+          public uint VersionNumber;
+      }
+
+      #endregion
+
+      #region Nested type: DeviceInfoKeyboard
+
+      public struct DeviceInfoKeyboard
+      {
+          public uint KeyboardMode;
+          public uint NumberOfFunctionKeys;
+          public uint NumberOfIndicators;
+          public uint NumberOfKeysTotal;
+          public uint SubType;
+          public uint Type;
+      }
+
+      #endregion
+
+      #region Nested type: DeviceInfoMouse
+
+      public struct DeviceInfoMouse
+      {
+          public uint ID;
+          public uint NumberOfButtons;
+          public uint SampleRate;
+      }
+
+      #endregion
+
+      #region Nested type: RAWHID
+
+      [StructLayout(LayoutKind.Sequential)]
+      public struct RAWHID
+      {
+          [MarshalAs(UnmanagedType.U4)]
+          public int dwSizeHid;
+          [MarshalAs(UnmanagedType.U4)]
+          public int dwCount;
+
+          //public IntPtr bRawData;
+      }
+
+      #endregion
+
+      #region Nested type: RAWINPUT
+
+      [StructLayout(LayoutKind.Explicit)]
+      public struct RAWINPUT
+      {
+          [FieldOffset(0)]
+          public RAWINPUTHEADER header;
+          [FieldOffset(16)]
+          public RAWMOUSE mouse;
+          [FieldOffset(16)]
+          public RAWKEYBOARD keyboard;
+          [FieldOffset(16)]
+          public RAWHID hid;
+      }
+
+      #endregion
+
+      #region Nested type: RAWINPUTDEVICE
+
+      [StructLayout(LayoutKind.Sequential)]
+      public struct RAWINPUTDEVICE
+      {
+          [MarshalAs(UnmanagedType.U2)]
+          public ushort usUsagePage;
+          [MarshalAs(UnmanagedType.U2)]
+          public ushort usUsage;
+          [MarshalAs(UnmanagedType.U4)]
+          public RawInputDeviceFlags dwFlags;
+          public IntPtr hwndTarget;
+      }
+
+      #endregion
+
+      #region Nested type: RAWINPUTDEVICELIST
+
+      [StructLayout(LayoutKind.Sequential)]
+      public struct RAWINPUTDEVICELIST
+      {
+          public IntPtr hDevice;
+          [MarshalAs(UnmanagedType.U4)]
+          public RawInputType dwType;
+      }
+
+      #endregion
+
+      #region Nested type: RAWINPUTHEADER
+
+      [StructLayout(LayoutKind.Sequential)]
+      public struct RAWINPUTHEADER
+      {
+          [MarshalAs(UnmanagedType.U4)]
+          public RawInputType dwType;
+          [MarshalAs(UnmanagedType.U4)]
+          public int dwSize;
+          public IntPtr hDevice;
+          [MarshalAs(UnmanagedType.U4)]
+          public int wParam;
+      }
+
+      #endregion
+
+      #region Nested type: RAWKEYBOARD
+
+      [StructLayout(LayoutKind.Sequential)]
+      public struct RAWKEYBOARD
+      {
+          [MarshalAs(UnmanagedType.U2)]
+          public ushort MakeCode;
+          [MarshalAs(UnmanagedType.U2)]
+          public RawKeyboardFlags Flags;
+          [MarshalAs(UnmanagedType.U2)]
+          public ushort Reserved;
+          [MarshalAs(UnmanagedType.U2)]
+          public ushort VKey;
+          [MarshalAs(UnmanagedType.U4)]
+          public uint Message;
+          [MarshalAs(UnmanagedType.U4)]
+          public uint ExtraInformation;
+      }
+
+      #endregion
+
+      #region Nested type: RAWMOUSE
+
+      [StructLayout(LayoutKind.Explicit)]
+      public struct RAWMOUSE
+      {
+          [MarshalAs(UnmanagedType.U2)]
+          [FieldOffset(0)]
+          public ushort usFlags;
+          [MarshalAs(UnmanagedType.U4)]
+          [FieldOffset(4)]
+          public uint ulButtons;
+          [FieldOffset(4)]
+          public BUTTONSSTR buttonsStr;
+          [MarshalAs(UnmanagedType.U4)]
+          [FieldOffset(8)]
+          public uint ulRawButtons;
+          [FieldOffset(12)]
+          public int lLastX;
+          [FieldOffset(16)]
+          public int lLastY;
+          [MarshalAs(UnmanagedType.U4)]
+          [FieldOffset(20)]
+          public uint ulExtraInformation;
+      }
+
+      #endregion
+
+      #endregion Structures
+
+      public static List<DeviceDetails> EnumerateDevices()
+      {
+          uint deviceCount = 0;
+          int dwSize = Marshal.SizeOf(typeof(RAWINPUTDEVICELIST));
+
+          // Get the number of raw input devices in the list,
+          // then allocate sufficient memory and get the entire list
+          if (GetRawInputDeviceList(IntPtr.Zero, ref deviceCount, (uint)dwSize) == 0)
+          {
+              IntPtr pRawInputDeviceList = Marshal.AllocHGlobal((int)(dwSize * deviceCount));
+              GetRawInputDeviceList(pRawInputDeviceList, ref deviceCount, (uint)dwSize);
+
+              List<DeviceDetails> devices = new List<DeviceDetails>((int)deviceCount);
+
+              // Iterate through the list, discarding undesired items
+              // and retrieving further information on keyboard devices
+              for (int i = 0; i < deviceCount; i++)
+              {
+                  string deviceName;
+                  uint pcbSize = 0;
+
+                  RAWINPUTDEVICELIST rid;
+
+                  IntPtr location;
+                  int offset = dwSize * i;
+
+                  if (IntPtr.Size == 4)
+                      location = new IntPtr(pRawInputDeviceList.ToInt32() + offset);
+                  else
+                      location = new IntPtr(pRawInputDeviceList.ToInt64() + offset);
+
+                  rid = (RAWINPUTDEVICELIST)Marshal.PtrToStructure(location, typeof(RAWINPUTDEVICELIST));
+
+                  GetRawInputDeviceInfo(rid.hDevice, RIDI_DEVICENAME, IntPtr.Zero, ref pcbSize);
+
+                  if (pcbSize > 0)
+                  {
+                      IntPtr pData = Marshal.AllocHGlobal((int)pcbSize);
+                      GetRawInputDeviceInfo(rid.hDevice, RIDI_DEVICENAME, pData, ref pcbSize);
+                      deviceName = Marshal.PtrToStringAnsi(pData);
+
+                      // Drop the "root" keyboard and mouse devices used for Terminal Services and the Remote Desktop
+                      if (deviceName.ToUpperInvariant().Contains("ROOT"))
+                          continue;
+
+                      // If the device is identified in the list as a keyboard or 
+                      // HID device, create a DeviceInfo object to store information 
+                      // about it
+
+                      // Get Detailed Info ...
+                      uint size = (uint)Marshal.SizeOf(typeof(DeviceInfo));
+                      DeviceInfo di = new DeviceInfo();
+                      di.Size = Marshal.SizeOf(typeof(DeviceInfo));
+                      GetRawInputDeviceInfo(rid.hDevice, RIDI_DEVICEINFO, ref di, ref size);
+
+                      di = new DeviceInfo();
+                      di.Size = Marshal.SizeOf(typeof(DeviceInfo));
+                      GetRawInputDeviceInfo(rid.hDevice, RIDI_DEVICEINFO, ref di, ref size);
+
+                      DeviceDetails details = new DeviceDetails();
+                      //details.Name = deviceName;
+                      details.ID = deviceName;
+
+                      switch (di.Type)
+                      {
+                          case RawInputType.HID:
+                              {
+                                  string vidAndPid = String.Format("Vid_{0:x4}&Pid_{1:x4}", di.HIDInfo.VendorID, di.HIDInfo.ProductID);
+                                  details.Name = String.Format("HID: {0}", GetFriendlyName(vidAndPid));
+                                  //details.ID = GetDeviceDesc(deviceName);
+
+                                  details.UsagePage = di.HIDInfo.UsagePage;
+                                  details.Usage = di.HIDInfo.Usage;
+
+                                  devices.Add(details);
+                                  break;
+                              }
+
+                          case RawInputType.Keyboard:
+                              {
+                                  details.Name = "HID Keyboard";
+                                  //details.ID = String.Format("{0}-{1}", di.KeyboardInfo.Type, di.KeyboardInfo.SubType);
+
+                                  details.UsagePage = 0x01;
+                                  details.Usage = 0x06;
+
+                                  devices.Add(details);
+                                  break;
+                              }
+
+                          case RawInputType.Mouse:
+                              {
+                                  details.Name = "HID Mouse";
+
+                                  details.UsagePage = 0x01;
+                                  details.Usage = 0x02;
+
+                                  devices.Add(details);
+                                  break;
+                              }
+                      }
+
+                      Marshal.FreeHGlobal(pData);
+                  }
+              }
+
+              Marshal.FreeHGlobal(pRawInputDeviceList);
+
+              return devices;
+          }
+          else
+          {
+              throw new InvalidOperationException("An error occurred while retrieving the list of devices");
+          }
+      }
+
+      private static string GetFriendlyName(string vidAndPid)
+      {
+          try
+          {
+              using (RegistryKey USBEnum = Registry.LocalMachine.OpenSubKey("SYSTEM\\CurrentControlSet\\Enum\\USB"))
+              {
+                  foreach (string usbSubKey in USBEnum.GetSubKeyNames())
+                  {
+                      if (usbSubKey.IndexOf(vidAndPid, StringComparison.OrdinalIgnoreCase) == -1)
+                          continue;
+
+                      using (RegistryKey currentKey = USBEnum.OpenSubKey(usbSubKey))
+                      {
+                          string[] vidAndPidSubKeys = currentKey.GetSubKeyNames();
+
+                          foreach (string vidAndPidSubKey in vidAndPidSubKeys)
+                          {
+                              using (RegistryKey subKey = currentKey.OpenSubKey(vidAndPidSubKey))
+                                  return subKey.GetValue("LocationInformation", null) as string;
+                          }
+                      }
+                  }
+              }
+          }
+          catch
+          {
+          }
+
+          return null;
+      }
+  }
+  #endregion
 }

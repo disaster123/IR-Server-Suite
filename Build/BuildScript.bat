@@ -1,7 +1,7 @@
 @ECHO OFF
 
 REM set paths
-set DeployVersionSVN="..\..\..\..\..\MediaPortal\trunk\Tools\Script & Batch tools\DeployVersionSVN\DeployVersionSVN\bin\Release\DeployVersionSVN.exe"
+set DeployVersionSVN="..\..\MediaPortal\Tools\Script & Batch tools\DeployVersionSVN\DeployVersionSVN\bin\Release\DeployVersionSVN.exe"
 
 REM detect if BUILD_TYPE should be release or debug
 if not %1!==Debug! goto RELEASE

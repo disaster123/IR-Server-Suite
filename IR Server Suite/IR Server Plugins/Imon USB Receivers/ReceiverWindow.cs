@@ -91,7 +91,8 @@ namespace IRServer.Plugin
       if (_processMessage != null)
         _processMessage(ref m);
 
-      base.WndProc(ref m);
+      if (m.Result == (IntPtr)0)
+        base.WndProc(ref m);      
     }
 
     #endregion Implementation

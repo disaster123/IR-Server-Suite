@@ -3,7 +3,7 @@
   <PropertyGroup>
     <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
-    <ProductVersion>9.0.30729</ProductVersion>
+    <ProductVersion>9.0.21022</ProductVersion>
     <SchemaVersion>2.0</SchemaVersion>
     <ProjectGuid>{E8BEBBCC-1EE0-488D-8806-98ADCB7F0479}</ProjectGuid>
     <OutputType>Library</OutputType>
@@ -100,6 +100,10 @@
     </Compile>
   </ItemGroup>
   <ItemGroup>
+    <Reference Include="Common.Utils, Version=1.1.6.27728, Culture=neutral, processorArchitecture=x86">
+      <SpecificVersion>False</SpecificVersion>
+      <HintPath>..\..\..\..\..\MediaPortal\Common-MP-TVE3\Common.Utils\bin\Release\Common.Utils.dll</HintPath>
+    </Reference>
     <Reference Include="Microsoft.DirectX.Direct3D, Version=1.0.2902.0, Culture=neutral, PublicKeyToken=31bf3856ad364e35">
       <SpecificVersion>False</SpecificVersion>
       <HintPath>..\..\..\..\..\..\mediaportal\trunk\mediaportal\xbmc\bin\Release\Microsoft.DirectX.Direct3D.DLL</HintPath>
@@ -143,19 +147,19 @@
       <Project>{02FFFC1F-2555-4B99-8B01-3432D0673855}</Project>
       <Name>Core</Name>
     </ProjectReference>
-    <ProjectReference Include="..\..\..\..\..\..\..\mediaportal\trunk\mediaportal\Databases\Databases.csproj">
+    <ProjectReference Include="..\..\..\..\..\mediaportal\mediaportal\Databases\Databases.csproj">
       <Project>{C1BCEC3E-6074-4328-B5D9-391A457C8FFB}</Project>
       <Name>Databases</Name>
     </ProjectReference>
-    <ProjectReference Include="..\..\..\..\..\..\..\mediaportal\trunk\mediaportal\Dialogs\Dialogs.csproj">
+    <ProjectReference Include="..\..\..\..\..\mediaportal\mediaportal\Dialogs\Dialogs.csproj">
       <Project>{396C5208-5D46-4A11-92C1-FD0F2F42D7DD}</Project>
       <Name>Dialogs</Name>
     </ProjectReference>
-    <ProjectReference Include="..\..\..\..\..\..\..\mediaportal\trunk\mediaportal\RemotePlugins\RemotePlugins.csproj">
+    <ProjectReference Include="..\..\..\..\..\mediaportal\mediaportal\RemotePlugins\RemotePlugins.csproj">
       <Project>{0A234721-1F13-4DF8-9B1E-64D9E3111203}</Project>
       <Name>RemotePlugins</Name>
     </ProjectReference>
-    <ProjectReference Include="..\..\..\..\..\..\..\mediaportal\trunk\mediaportal\Utils\Utils.csproj">
+    <ProjectReference Include="..\..\..\..\..\mediaportal\mediaportal\Utils\Utils.csproj">
       <Project>{6DA0E4DF-6230-4642-98B5-E690BB6942BB}</Project>
       <Name>Utils</Name>
     </ProjectReference>

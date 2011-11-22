@@ -1,0 +1,6 @@
+.svn
+*.suo
+*.cache
+obj
+bin
+/Build/*.log

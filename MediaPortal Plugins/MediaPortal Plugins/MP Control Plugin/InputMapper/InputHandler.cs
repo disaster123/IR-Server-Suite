@@ -58,6 +58,8 @@ namespace MediaPortal.Plugins
       using (Settings xmlreader = new Settings(Config.GetFile(Config.Dir.Config, "MediaPortal.xml")))
         _basicHome = xmlreader.GetValueAsBool("general", "startbasichome", false);
 
+      Log.Info("MPControlPlugin: Try to get XML Path of device: \"{0}\"", deviceXmlName);
+
       string xmlPath = GetXmlPath(deviceXmlName);
       LoadMapping(xmlPath);
     }
@@ -130,7 +132,7 @@ namespace MediaPortal.Plugins
       else if (File.Exists(pathDefault) && CheckXmlFile(pathDefault))
       {
         path = pathDefault;
-        Log.Info("MAP: using default mappings for {0}", deviceXmlName);
+        Log.Info("MAP: using default mappings for {0} cause wasn't able to find valid {1}", deviceXmlName, pathCustom);
       }
       return path;
     }
@@ -144,6 +146,7 @@ namespace MediaPortal.Plugins
     {
       if (xmlPath != string.Empty)
       {
+        Log.Info("MPControlPlugin: InputHandler: Load Mapping \"{0}\"", xmlPath);
         _remoteMaps.Clear();
         XmlDocument doc = new XmlDocument();
         doc.Load(xmlPath);
@@ -152,6 +155,8 @@ namespace MediaPortal.Plugins
         {
           string name = nodeButton.Attributes["name"].Value;
           string value = nodeButton.Attributes["code"].Value;
+
+          Log.Debug("MPControlPlugin: InputHandler: Name: \"{0}\" Value: \"{1}\"", name, value);
 
           List<Mapping> mappings = new List<Mapping>();
           XmlNodeList listActions = nodeButton.SelectNodes("action");
@@ -263,7 +268,7 @@ namespace MediaPortal.Plugins
       Log.Debug("{0} / {1} / {2} / {3}", map.Condition, map.ConProperty, map.Command, map.CmdProperty);
 
       Action action;
-      if (map.Sound != string.Empty) // && !g_Player.Playing)
+      if (map.Sound != string.Empty && !g_Player.Playing) // && !g_Player.Playing)
         Util.Utils.PlaySound(map.Sound, false, true);
       if (map.Focus && !GUIGraphicsContext.HasFocus)
       {
@@ -277,7 +282,7 @@ namespace MediaPortal.Plugins
         case "ACTION": // execute Action x
           Key key = new Key(map.CmdKeyChar, map.CmdKeyCode);
 
-          Log.Debug("Executing: key {0} / {1} / Action: {2} / {3}", map.CmdKeyChar, map.CmdKeyCode, map.CmdProperty,
+          Log.Debug("MPControlPlugin: Executing: key {0} / {1} / Action: {2} / {3}", map.CmdKeyChar, map.CmdKeyCode, map.CmdProperty,
                    ((Action.ActionType) Convert.ToInt32(map.CmdProperty)).ToString());
 
           action = new Action(key, (Action.ActionType) Convert.ToInt32(map.CmdProperty), 0, 0);

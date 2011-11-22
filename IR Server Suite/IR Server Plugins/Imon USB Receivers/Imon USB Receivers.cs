@@ -113,6 +113,8 @@ namespace IRServer.Plugin
         private const uint IMON_NAVIGATION_DOWN = 4012;
         private const uint IMON_NAVIGATION_UP = 4011;
 
+        private const int WM_POWERBROADCAST = 0x0218;
+        
         private static readonly string ConfigurationFile = Path.Combine(ConfigurationPath, "iMon USB Receivers.xml");
 
         #endregion Constants
@@ -787,6 +789,7 @@ namespace IRServer.Plugin
             {
                 _deviceTree[MouseDevice].dwFlags = RawInput.RawInputDeviceFlags.InputSink;
                 _deviceTree[MouseDevice].hwndTarget = _receiverWindowHID.Handle;
+              
             }
 
             if (!_enableRemoteInput & !_enableKeyboardInput & !_enableMouseInput)
@@ -1368,19 +1371,30 @@ namespace IRServer.Plugin
             switch (m.Msg)
             {
                 case RawInput.WM_INPUT:
+                    m.Result = (IntPtr)1;
                     ProcessInputCommand(ref m);
                     break;
 
                 case RawInput.WM_KEYDOWN:
+                    m.Result = (IntPtr)1;
                     ProcessKeyDown(m.WParam.ToInt32());
                     break;
 
                 case RawInput.WM_KEYUP:
+                    m.Result = (IntPtr)1;
                     ProcessKeyUp(m.WParam.ToInt32());
                     break;
 
                 case RawInput.WM_APPCOMMAND:
+                    m.Result = (IntPtr)1;
                     ProcessAppCommand(m.LParam.ToInt32());
+                    break;
+                case WM_POWERBROADCAST:
+                    DebugWriteLine("received WM_POWERBROADCAST");
+                    if (_remoteMode == RemoteMode.iMON)
+                    {
+                        SetHid(_padMode);
+                    }
                     break;
             }
         }
@@ -1397,7 +1411,7 @@ namespace IRServer.Plugin
                 _keyboardHandler(Name, param, true);
         }
 
-        private void ProcessAppCommand(int param)
+        public void ProcessAppCommand(int param)
         {
             DebugWriteLine("Received AppCommand - Param: {0}", param);
         }
@@ -1461,6 +1475,7 @@ namespace IRServer.Plugin
         private void ProcessInputCommand(ref Message message)
         {
             uint dwSize = 0;
+            // DebugWriteLine("ProcessInputCommand called");
 
             RawInput.GetRawInputData(message.LParam, RawInput.RawInputCommand.Input, IntPtr.Zero, ref dwSize,
                                      (uint)Marshal.SizeOf(typeof(RawInput.RAWINPUTHEADER)));
@@ -1668,7 +1683,7 @@ namespace IRServer.Plugin
                         {
                             if (_enableKeyboardInput)
                             {
-                                DebugWriteLine("RAW IMON HID KEYBOARD- CODE: {0}  FLAGS: {1}  MESSAGE: {2}", raw.keyboard.VKey,
+                                DebugWriteLine("RAW IMON HID (RawInput.RawInputType.Keyboard) KEYBOARD CODE: {0}  FLAGS: {1}  MESSAGE: {2}", raw.keyboard.VKey,
                                                raw.keyboard.Flags, raw.keyboard.Message);
                                 bool ConsumeKeypress = false;
                                 bool SendToKeyboard = false;
@@ -1676,6 +1691,7 @@ namespace IRServer.Plugin
 
                                 switch (raw.keyboard.Flags)
                                 {
+                                    // STEFAN case (RawInput.RawKeyboardFlags.KeyE0 | RawInput.RawKeyboardFlags.KeyBreak):
                                     case RawInput.RawKeyboardFlags.KeyE0:
                                         DebugWriteLine(String.Format("KEYBOARD FLAG E0: {0}", raw.keyboard.MakeCode));
                                         KeyCode = 0;
@@ -1723,6 +1739,7 @@ namespace IRServer.Plugin
                                         break;
 
                                     case RawInput.RawKeyboardFlags.KeyMake:
+                                        DebugWriteLine(String.Format("KEYBOARD FLAG KeyMake: {0}", raw.keyboard.MakeCode));
                                         //#if DEBUG
                                         //                                  DebugWriteLine("RAW IMON HID KEYBOARD CODE: {0}  FLAGS: {1}  MESSAGE: {2}", raw.keyboard.VKey, raw.keyboard.Flags, raw.keyboard.Message);
                                         //                                  Console.WriteLine("RAW IMON HID KEYBOARD CODE: {0}  FLAGS: {1}  MESSAGE: {2}  EXTRA: {3}", raw.keyboard.VKey, raw.keyboard.Flags, raw.keyboard.Message, raw.keyboard.ExtraInformation);
@@ -1785,10 +1802,12 @@ namespace IRServer.Plugin
                                             }
                                             if (!ConsumeKeypress & !SendToKeyboard)
                                             {
+                                                // Key Down Messages
                                                 RemoteEvent(KeyCode, false);
                                             }
                                             else if (!ConsumeKeypress)
                                             {
+                                                DebugWriteLine("call _keyboardhandler 1");
                                                 _keyboardHandler(Name, (int)KeyCode, false);
                                             }
                                             else
@@ -1801,6 +1820,7 @@ namespace IRServer.Plugin
                                         break;
 
                                     case RawInput.RawKeyboardFlags.KeyBreak:
+                                        DebugWriteLine(String.Format("KEYBOARD FLAG KeyBreak: {0}", raw.keyboard.MakeCode));
                                         KeyCode = 0;
                                         ConsumeKeypress = false;
                                         SendToKeyboard = false;
@@ -1860,10 +1880,14 @@ namespace IRServer.Plugin
                                         }
                                         if (!ConsumeKeypress & !SendToKeyboard)
                                         {
-                                            RemoteEvent(KeyCode, false);
+                                            // Key Up Messages - don't think that we need it remote :-)
+                                            DebugWriteLine("Keybreak PAST Message => SKIP");
+                                            // RemoteEvent(KeyCode, false);
                                         }
                                         else if (!ConsumeKeypress)
                                         {
+                                            DebugWriteLine("_keyboardHandler - CODE: {0}  FLAGS: {1}  MESSAGE: {2}\n", raw.keyboard.VKey,
+                                                           raw.keyboard.Flags, raw.keyboard.Message);
                                             _keyboardHandler(Name, (int)KeyCode, true);
                                         }
                                         else
@@ -1882,9 +1906,13 @@ namespace IRServer.Plugin
                                         DebugWriteLine("RAW IMON HID KEYBOARD - TerminalServerShadow - CODE: {0}  FLAGS: {1}  MESSAGE: {2}",
                                                        raw.keyboard.VKey, raw.keyboard.Flags, raw.keyboard.Message);
                                         break;
+                                    default:
+                                        DebugWriteLine("RAW IMON HID KEYBOARD - UNKNOWN RawKeyboardFlags - CODE: {0}  FLAGS: {1}  MESSAGE: {2}\n", raw.keyboard.VKey,
+                                                       raw.keyboard.Flags, raw.keyboard.Message);
+                                        break;
                                 }
                             }
-                            else DebugWriteLine("RAW IMON HID KEYBOARD (ignoring) - CODE: {0}  FLAGS: {1}  MESSAGE: {2}",
+                            else DebugWriteLine("RAW IMON HID KEYBOARD (ignoring (enableKeyBoardInput disabled)) - CODE: {0}  FLAGS: {1}  MESSAGE: {2}",
                                                 raw.keyboard.VKey, raw.keyboard.Flags, raw.keyboard.Message);
                             break;
                         }
@@ -2121,6 +2149,7 @@ namespace IRServer.Plugin
 
         private static void KeyUp(uint keyCode, uint modifiers)
         {
+            DebugWriteLine("KeyUp called");
             if (keyCode != 0)
             {
                 Keyboard.VKey vKey = ConvertMceKeyCodeToVKey(keyCode);
@@ -2151,17 +2180,21 @@ namespace IRServer.Plugin
 
         private void KeyUpRemote(uint keyCode, uint modifiers)
         {
+            DebugWriteLine("KeyUpRemote");
             if (_keyboardHandler == null)
                 return;
 
             if (keyCode != 0)
             {
                 Keyboard.VKey vKey = ConvertMceKeyCodeToVKey(keyCode);
+                DebugWriteLine("call _keyboardhandler 3");
                 _keyboardHandler(Name, (int)vKey, true);
             }
 
             if (modifiers != 0)
             {
+                DebugWriteLine("call _keyboardhandler 4");
+
                 if ((modifiers & (uint)KeyModifiers.LeftAlt) != 0)
                     _keyboardHandler(Name, (int)Keyboard.VKey.VK_LMENU, true);
                 if ((modifiers & (uint)KeyModifiers.LeftControl) != 0)
@@ -2184,6 +2217,7 @@ namespace IRServer.Plugin
 
         private static void KeyDown(uint keyCode, uint modifiers)
         {
+            DebugWriteLine("KeyDown called");
             if (modifiers != 0)
             {
                 if ((modifiers & (uint)KeyModifiers.LeftAlt) != 0)
@@ -2214,11 +2248,14 @@ namespace IRServer.Plugin
 
         private void KeyDownRemote(uint keyCode, uint modifiers)
         {
+            DebugWriteLine("KeyDownRemote");
             if (_keyboardHandler == null)
                 return;
 
             if (modifiers != 0)
             {
+                DebugWriteLine("call _keyboardhandler 4");
+
                 if ((modifiers & (uint)KeyModifiers.LeftAlt) != 0)
                     _keyboardHandler(Name, (int)Keyboard.VKey.VK_LMENU, false);
                 if ((modifiers & (uint)KeyModifiers.LeftControl) != 0)
@@ -2241,6 +2278,8 @@ namespace IRServer.Plugin
             if (keyCode != 0)
             {
                 Keyboard.VKey vKey = ConvertMceKeyCodeToVKey(keyCode);
+                DebugWriteLine("call _keyboardhandler 5");
+
                 _keyboardHandler(Name, (int)vKey, false);
             }
         }

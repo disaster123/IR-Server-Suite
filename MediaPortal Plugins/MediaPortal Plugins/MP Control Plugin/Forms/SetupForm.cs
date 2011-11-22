@@ -80,22 +80,22 @@ namespace MediaPortal.Plugins
       RefreshMacroList();
 
       // Mouse Mode ...
-      foreach (string button in Enum.GetNames(typeof (RemoteButton)))
+      foreach (string button in Enum.GetNames(typeof (RemoteButton_my)))
         if (!button.Equals("None", StringComparison.OrdinalIgnoreCase))
           comboBoxMouseModeButton.Items.Add(button);
 
-      comboBoxMouseModeButton.SelectedItem = Enum.GetName(typeof (RemoteButton), MPControlPlugin.MouseModeButton);
+      comboBoxMouseModeButton.SelectedItem = Enum.GetName(typeof (RemoteButton_my), MPControlPlugin.MouseModeButton);
 
       numericUpDownMouseStep.Value = new decimal(MPControlPlugin.MouseModeStep);
 
       checkBoxMouseAcceleration.Checked = MPControlPlugin.MouseModeAcceleration;
 
       // Multi-Mapping ...
-      foreach (string button in Enum.GetNames(typeof (RemoteButton)))
+      foreach (string button in Enum.GetNames(typeof (RemoteButton_my)))
         if (!button.Equals("None", StringComparison.OrdinalIgnoreCase))
           comboBoxMultiButton.Items.Add(button);
 
-      comboBoxMultiButton.SelectedItem = Enum.GetName(typeof (RemoteButton), MPControlPlugin.MultiMappingButton);
+      comboBoxMultiButton.SelectedItem = Enum.GetName(typeof (RemoteButton_my), MPControlPlugin.MultiMappingButton);
 
       foreach (string map in MPControlPlugin.MultiMaps)
         listBoxMappings.Items.Add(map);
@@ -802,12 +802,12 @@ namespace MediaPortal.Plugins
       MPControlPlugin.MouseModeEnabled = checkBoxMouseMode.Checked;
 
       MPControlPlugin.MouseModeButton =
-        (RemoteButton) Enum.Parse(typeof (RemoteButton), comboBoxMouseModeButton.SelectedItem as string, true);
+        (RemoteButton_my) Enum.Parse(typeof (RemoteButton_my), comboBoxMouseModeButton.SelectedItem as string, true);
       MPControlPlugin.MouseModeStep = Decimal.ToInt32(numericUpDownMouseStep.Value);
       MPControlPlugin.MouseModeAcceleration = checkBoxMouseAcceleration.Checked;
 
       MPControlPlugin.MultiMappingButton =
-        (RemoteButton) Enum.Parse(typeof (RemoteButton), comboBoxMultiButton.SelectedItem as string, true);
+        (RemoteButton_my) Enum.Parse(typeof (RemoteButton_my), comboBoxMultiButton.SelectedItem as string, true);
 
       SaveMultiMappings();
 

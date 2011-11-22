@@ -47,7 +47,7 @@ namespace IRServer.Plugin
         /// </summary>
         /// <param name="line">The line.</param>
         /// <param name="args">Formatting arguments.</param>
-        private static void DebugWriteLine(string line, params object[] args)
+        public static void DebugWriteLine(string line, params object[] args)
         {
             if (_debugFile != null)
             {
